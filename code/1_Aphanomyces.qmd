@@ -1,0 +1,663 @@
+---
+title: "Aphanomyces analysis"
+author: "Sidhant Chaudhary"
+format: pdf
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r message=FALSE, warning=FALSE, echo = F}
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, tidymodels, janitor, lme4, lmerTest, 
+               lsmeans, emmeans, multcomp, multcompView,
+               openxlsx, conflicted,
+               ggExtra, ggpubr, viridis) 
+
+# conflicts: identical function names from different packages
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflict_prefer("lmer", "lmerTest")
+
+# ggplot theme
+theme_set(
+  theme_test() + 
+    theme(legend.position = "bottom",
+          legend.box="vertical",
+          axis.title = element_text(color = "black"),
+          axis.text = element_text(color = "black"),
+          # strip.background = element_rect(fill = "lightgray"),
+          # strip.text = element_text(size = 14, face = "bold", hjust = 0)
+    ))
+```
+
+## Data structure
+
+```{r message=FALSE, warning=FALSE, echo = F, include=FALSE}
+dta <- read.xlsx("Biotest lista Sc.xlsx",sheet= "Aph. Index + soil analysis 1 MW") %>% as_tibble()
+dta <- 
+  dta %>%
+  clean_names()
+
+colnames(dta)
+
+pea <- 
+  dta %>%
+  select(id, region, contains("soil"), contains("pea")) %>%
+  pivot_longer(cols = contains("index"), names_to = "rep", values_to = "disease") %>%
+  mutate(crop = "Pea", 
+         rep = str_replace_all(rep, "[^0-9]", "")
+         ) %>%
+  mutate_if(is.character, as.factor) %>%
+  rename(pathogen = note_pea)
+
+sugar_beet <- 
+  dta %>%
+  select(id, region, contains("soil"), contains("sugar_beet")) %>%
+  pivot_longer(cols = contains("index"), names_to = "rep", values_to = "disease") %>%
+  mutate(crop = "Sugar beet", 
+         rep = str_replace_all(rep, "[^0-9]", "")
+         ) %>%
+  mutate_if(is.character, as.factor) %>%
+  rename(pathogen = note_sugar_beet)
+
+spinach <- 
+  dta %>%
+  select(id, region, contains("soil"), contains("spinach")) %>% 
+  pivot_longer(cols = contains("index"), names_to = "rep", values_to = "disease") %>%
+  mutate(crop = "Spinach", 
+         rep = str_replace_all(rep, "[^0-9]", "")
+         ) %>%
+  mutate_if(is.character, as.factor) %>%
+  rename(pathogen = note_spinach)
+
+dta_long <- 
+  bind_rows(pea, sugar_beet, spinach) %>%
+  mutate(pathogen = as.character(pathogen)) %>%
+  mutate(pathogen = str_replace(pathogen, "A\\.", "Aphanomyces")) %>%
+  mutate(pathogen = factor(pathogen),
+         pathogen = fct_recode(pathogen, "None" = "No pathogen found"),
+         pathogen = fct_relevel(pathogen, 
+                                "Aphanomyces cladogamus",
+                                "Aphanomyces cochlioides",
+                                "Aphanomyces euteiches",
+                                "Aphanomyces cladogamus + Rhizoctonia",
+                                "Aphanomyces cochlioides + Rhizoctonia",
+                                "Aphanomyces euteiches + Phytophthora",
+                                "Aphanomyces sp. + Pythium",
+                                "Pythium",
+                                "Pythium + Nematodes",
+                                "Rhizoctonia",
+                                "Rhizoctonia + Pythium",
+                                "Rhizoctonia + Pythium + Nematodes",
+                                "Nematodes",
+                                "None"
+                                ))
+
+levels(dta_long$pathogen)
+```
+
+```{r message=FALSE, warning=FALSE, echo = F}
+skimr::skim(dta_long)
+```
+
+## Descriptive plots
+
+```{r message=FALSE, warning=FALSE, echo = F, out.width="120%"}
+
+# how many pathogens per crop
+dta_long %>%
+  ggplot(aes(x = pathogen, y = disease)) + 
+  geom_hline(yintercept = 0, lty = 2, color = "gray") + 
+  geom_jitter(shape = 21, color = "steelblue") +
+  geom_boxplot(color = "black", fill = "steelblue", alpha = 0.8, outlier.shape = NA) + 
+  
+  geom_text(data=. %>% 
+              group_by(crop, pathogen) %>% 
+              summarise(n=n()), 
+            aes(x=pathogen, y=-3, label= paste0("(n = ", n, ")")), 
+            hjust = 1, color= "gray50") +
+  stat_summary(fun = "mean", geom = "point", shape = 18, size = 4) + 
+  scale_y_continuous(breaks = seq(0,120, by =20), limits = c(-25, 100)) + 
+  coord_flip() +
+  facet_wrap(~crop) + 
+  labs(x = "", y = "Disease (%)")
+
+ggsave("pathogens.pdf", plot = last_plot() + 
+         theme(title = element_text(size = 18),
+               axis.text = element_text(size = 13, color = "black"), 
+               axis.title = element_text(size = 15, color = "black"),
+               strip.text = element_text(size = 13, color = "black", face = "bold", hjust = 0.2),
+               panel.grid.major.y = element_line(color = "lightgray", size = 0.1),
+               legend.position = "top", 
+               legend.text = element_text(size = 13), 
+               plot.caption = element_text(size = 10)
+               ), height = 8, width = 12)
+```
+
+\newpage
+
+```{r message=FALSE, warning=FALSE, echo = F}
+dta_long %>%
+  filter(rep == 1) %>%
+  group_by(crop, pathogen) %>%
+  count() %>%
+  print(n= nrow(.))
+```
+
+NOTE: More analysis can be done here by making pathogen levels as follows:
+
+1.  *Aphanomyces euteiches*,
+
+2.  *Aphanomyces cladogamu*s,
+
+3.  *Aphanomyces cochlioides*,
+
+4.  *Aphanomyces* sp. + others (combined in one category),
+
+5.  *Rhizoctonia* sp.,
+
+6.  *Pyhtium* sp.,
+
+7.  others
+
+8.  none
+
+As there are not that many entries in the Aphanomyces + sth category, the rest of the analysis be on only Aphanomyces sp. subset of dataset
+
+```{r message=FALSE, warning=FALSE, echo = F}
+dta_aphano <- 
+  dta_long %>%
+  filter(pathogen %in% c("Aphanomyces cladogamus",
+                         "Aphanomyces cochlioides",
+                         "Aphanomyces euteiches",
+                         "None")) %>%
+  mutate(pathogen = fct_drop(pathogen),
+         log_soil_p_h = log10(soil_p_h), 
+         log_soil_ca = log10(soil_ca), 
+         log_soil_p = log10(soil_p),
+         log_soil_k = log10(soil_k),
+         log_soil_mg = log10(soil_mg)) 
+```
+
+\newpage
+
+# Exploring the dataset with *Aphanomyces sp.* only
+
+## Linear model for region, crop and pathogen
+
+```{r message=FALSE, warning=FALSE, echo = F}
+# Define the model specification
+
+model_full <- lm(disease ~ region*crop*pathogen, data= dta_aphano)
+#summary(model_full) 
+model_full$call
+anova(model_full)
+
+# Post hoc tests
+lsmeans <- emmeans(model_full, ~ region + crop + pathogen)
+lsmeans_df <- as_data_frame(lsmeans)
+lsmeans_tidy <- lsmeans %>% tidy()
+
+cld <- cld(lsmeans, Letters = letters)
+cld$.group <- gsub(" ", "", cld$.group)
+
+posthoc_full <- left_join(lsmeans_df, lsmeans_tidy, by = c("region", "crop", "pathogen", "df")) %>%
+  left_join(., cld, by = c("region", "crop", "pathogen", "df", "emmean", "upper.CL", "lower.CL", "SE"))
+
+```
+
+ANOVA reveals significant effect for region, pathogen and pathogen X region interaction. We have significant differences among regions for disease severity index. Various pathogen levels cause different levels of disease.
+
+The figure below from post-hoc analysis summarizes the results of ANOVA:
+
+```{r message=FALSE, warning=FALSE, echo = F, out.width="120%"}
+# Visualisations
+posthoc_full %>%
+  mutate(combo = paste0(region, " - ", crop, " - ", pathogen),
+         combo = fct_reorder(combo, estimate))  %>%
+  filter(!is.na(estimate)) %>%
+  ggplot(aes(x = estimate, y = fct_reorder(region, estimate), fill = pathogen)) +
+  geom_vline(xintercept = 0, lty = 2, color = "gray") + 
+  #geom_errorbar(aes(xmin = estimate -std.error, xmax = estimate + std.error), width = 0)  +
+  geom_errorbar(aes(xmin = lower.CL, xmax = upper.CL), width = 0, position = position_dodge(width = 0.6))  +
+  scale_fill_viridis( discrete = T, option = "turbo", direction = 1, begin = 0.1, end = 0.9) +
+  geom_point(shape = 21, size = 4, position = position_dodge(width = 0.6)) + 
+  # geom_text(aes(x = upper.CL + 2, label = .group), position = position_dodge(width = 0.6), 
+  #           hjust = 0, vjust = 0.5 ) +
+  geom_text(aes(x = upper.CL + 2 , 
+                label = ifelse(p.value < 0.001, "***", 
+                               ifelse(p.value < 0.01, "**", 
+                                      ifelse(p.value < 0.05, "*", "")))
+                ),
+            vjust = 0.7, hjust = 0, position = position_dodge(width = 0.6)
+            ) +
+  scale_x_continuous(breaks = seq(0,120, by =20), limits = c(-25, 100)) + 
+  facet_grid(~crop, scales = "free_y", space = "free_y") + 
+  labs(title = "Disease severity index in 3 crops in 13 regions by different Aphanomyces sp.",
+       x = "Disease %", 
+       y = NULL,
+       fill = NULL, 
+       caption = "Points represent the model mean estimate, error bars represent 95 % confidence interval \nEstimates that are significantly different from 0 are represented by * at p < 0.05, ** at p < 0.01, and *** at p < 0.001")
+
+# plot save
+ggsave("model_full_est.pdf", 
+       plot = last_plot() + 
+         theme(title = element_text(size = 18),
+               axis.text = element_text(size = 13, color = "black"), 
+               axis.title = element_text(size = 15, color = "black"),
+               strip.text = element_text(size = 13, color = "black", face = "bold", hjust = 0.2),
+               panel.grid.major.y = element_line(color = "lightgray", size = 0.1),
+               legend.position = "top", 
+               legend.text = element_text(size = 13), 
+               plot.caption = element_text(size = 10)
+               ),
+        
+       width = 12, height = 8)
+```
+
+```{r include = F}
+### Comparison of disease by Aphanomyces sp. in different regions
+posthoc_full %>% 
+  mutate(combo = paste0(region, " - ", crop, " - ", pathogen),
+         combo = fct_reorder(combo, estimate))  %>%
+  filter(!is.na(estimate)) %>% 
+  #filter(pathogen != "None") %>%
+  #view()
+  ggplot(aes(y = fct_reorder(region, estimate), x = estimate, fill = pathogen)) + geom_vline(xintercept = 0, lty = 2, color = "gray") + 
+  #geom_errorbar(aes(xmin = estimate -std.error, xmax = estimate + std.error), width = 0)  +
+  geom_errorbar(aes(xmin = lower.CL, xmax = upper.CL), width = 0, position = position_dodge(width = 0.6))  +
+  scale_fill_viridis( discrete = T, option = "turbo", direction = 1, begin = 0.1, end = 0.9) +
+  geom_point(shape = 21, size = 4, position = position_dodge(width = 0.6)) + 
+  geom_text(aes(x = upper.CL + 2, label = .group), position = position_dodge(width = 0.6),
+            hjust = 0, vjust = 0.5 ) +
+  # geom_text(aes(x = upper.CL + 2 , 
+  #               label = ifelse(p.value < 0.001, "***", 
+  #                              ifelse(p.value < 0.01, "**", 
+  #                                     ifelse(p.value < 0.05, "*", "")))
+  #               ),
+  #           vjust = 0.7, hjust = 0, position = position_dodge(width = 0.6)
+  #           ) +
+  scale_x_continuous(breaks = seq(0,120, by =20), limits = c(-25, 100)) + 
+  facet_grid(~crop, scales = "free_y", space = "free_y") 
+  
+```
+
+\newpage
+
+## Linear model for regions summarized over crops
+
+To better understand the effect of different regions in hosting pathogen, the same analysis as above was performed by summarizing over crops. ANOVA results are below:
+
+```{r message=FALSE, warning=FALSE, echo = F}
+model_region <- lm(disease ~ region*pathogen, data= dta_aphano)
+#summary(model_region) 
+model_region$call
+
+anova(model_region)
+
+
+# Post hoc tests
+lsmeans <- emmeans(model_region, ~ region + pathogen)
+lsmeans_df <- as_data_frame(lsmeans)
+lsmeans_tidy <- lsmeans %>% tidy()
+
+cld <- cld(lsmeans, Letters = letters)
+cld$.group <- gsub(" ", "", cld$.group)
+
+posthoc_region <- left_join(lsmeans_df, lsmeans_tidy, by = c( "region", "pathogen", "df")) %>%
+  left_join(., cld, by = c( "region", "pathogen", "df", "emmean", "upper.CL", "lower.CL", "SE"))
+
+
+
+```
+
+ANOVA results reveal that there is a significant effect of region, pathogen and region X pathogen interaction.
+
+Post-hoc results for this analysis are summarized in the figure below:
+
+```{r message=FALSE, warning=FALSE, echo = F, out.width="120%"}
+# Visualisations
+posthoc_region %>%
+  mutate(combo = paste0(region, " - ", pathogen),
+         combo = fct_reorder(combo, estimate))  %>%
+  #filter(!is.na(estimate)) %>%
+  ggplot(aes(x = estimate, y = fct_reorder(region, estimate), fill = pathogen)) +
+  geom_vline(xintercept = 0, lty = 2, color = "gray") +
+  geom_errorbar(data = posthoc_region,
+                aes(xmin = lower.CL, xmax = upper.CL), width = 0, linewidth = 1, 
+                position = position_dodge(width = 0.6))  +
+  scale_fill_viridis( discrete = T, option = "turbo", direction = 1, begin = 0.1, end = 0.9) +
+  geom_jitter(data = dta_aphano,
+              aes(x = disease, y = region, fill = pathogen),
+              width = 0, height = 0.2, shape=21,  alpha = 0.5, 
+              size = 1) +
+  geom_text(data=dta_aphano %>% 
+              group_by(region, pathogen) %>% 
+              summarise(n=n()), 
+            aes(y=region, x=-5, label= paste0("(n = ", n, ")")), 
+            hjust = 1, color = "gray50") +
+  geom_point(data = posthoc_region,
+             shape = 21, size = 5, stroke = 1, position = position_dodge(width = 0.6)) +
+  geom_text(data = posthoc_region,
+            aes(x = upper.CL + 2, label = .group), position = position_dodge(width = 0.6),
+            hjust = 0, vjust = 0.33, size = 5 ) +
+  scale_x_continuous(breaks = seq(0,120, by =20), limits = c(-25, 100)) + 
+  facet_grid(~pathogen, scales = "free_y", space = "free_y") + 
+  labs(title = "Disease severity index in 13 regions by different Aphanomyces sp.",
+       subtitle = "Summarized over 3 crops used in the study", 
+       x = "Disease %", 
+       y = NULL,
+       fill = NULL, 
+       caption = "Points represent the model mean estimate, error bars represent 95 % confidence interval \nTreatments sharing letters are not significantly different from each other")
+
+ggsave("model_est_region_summary.pdf", 
+       plot = last_plot() + 
+         theme(title = element_text(size = 18),
+               axis.text = element_text(size = 13, color = "black"), 
+               axis.title = element_text(size = 15, color = "black"),
+               strip.text = element_text(size = 13, color = "black", face = "bold", hjust = 0.2),
+               panel.grid.major.y = element_line(color = "lightgray", size = 0.1),
+               legend.position = "top", 
+               legend.text = element_text(size = 13), 
+               plot.caption = element_text(size = 10)
+               ),
+        
+       width = 12, height = 9)
+```
+
+\newpage
+
+## Linear model for pathogen summarized over regions
+
+To better understand the effect of different *Aphanomyces sp.* pathogens, the same analysis as above was performed by summarizing over regions. ANOVA results are below:
+
+```{r message=FALSE, warning=FALSE, echo = F}
+model_pathogen<- lm(disease ~ crop*pathogen, data= dta_aphano)
+#summary(model_region) 
+model_pathogen$call
+
+anova(model_pathogen)
+
+
+# Post hoc tests
+lsmeans <- emmeans(model_pathogen, ~ crop + pathogen)
+lsmeans_df <- as_data_frame(lsmeans)
+lsmeans_tidy <- lsmeans %>% tidy()
+
+cld <- cld(lsmeans, Letters = letters)
+cld$.group <- gsub(" ", "", cld$.group)
+
+posthoc_pathogen <- left_join(lsmeans_df, lsmeans_tidy, by = c( "crop", "pathogen", "df")) %>%
+  left_join(., cld, by = c( "crop", "pathogen", "df", "emmean", "upper.CL", "lower.CL", "SE"))
+
+
+
+```
+
+ANOVA results reveal that there is a significant effect of pathogen and crop X pathogen interaction.
+
+Post-hoc results for this analysis are summarized in the figure below:
+
+```{r message=FALSE, warning=FALSE, echo = F, out.width="120%"}
+# Visualisations
+posthoc_pathogen %>%
+  mutate(combo = paste0(crop, " - ", pathogen),
+         combo = fct_reorder(combo, estimate))  %>%
+  filter(!is.na(estimate)) %>% 
+  ggplot(aes(x = estimate, y = fct_reorder(pathogen, estimate), fill = pathogen)) +
+  geom_vline(xintercept = 0, lty = 2, color = "gray") +
+  geom_errorbar(data = posthoc_pathogen,
+                aes(xmin = lower.CL, xmax = upper.CL), width = 0, linewidth = 1, position = position_dodge(width = 0.6))  +
+  scale_fill_viridis( discrete = T, option = "turbo", direction = 1, begin = 0.1, end = 0.9) +
+  geom_jitter(data = dta_aphano,
+              aes(x = disease, y = pathogen, fill = pathogen),
+              width = 0, height = 0.2, shape=21,  alpha = 0.5, 
+              size = 1) +
+  geom_text(data=dta_aphano %>% 
+              group_by(crop, pathogen) %>% 
+              summarise(n=n()), 
+            aes(y=pathogen, x=-5, label= paste0("(n = ", n, ")")), 
+            hjust = 1, color = "gray50") +
+  geom_point(data = posthoc_pathogen,
+             shape = 21, size = 5, stroke = 1, position = position_dodge(width = 0.6)) +
+  geom_text(data = posthoc_pathogen,
+            aes(x = upper.CL + 2, label = .group), position = position_dodge(width = 0.6),
+            hjust = 0, vjust = 0.33, size = 5 ) +
+  scale_x_continuous(breaks = seq(0,120, by =20), limits = c(-25, 100)) + 
+  facet_grid(~crop, scales = "free_y", space = "free_y") + 
+  labs(title = "Disease severity index in 3 crops by different Aphanomyces sp.",
+       subtitle = "Summarized over 13 regions used in the study", 
+       x = "Disease %", 
+       y = NULL,
+       fill = NULL, 
+       caption = "Points represent the model mean estimate, error bars represent 95 % confidence interval \nTreatments sharing letters are not significantly different from each other")
+
+ggsave("model_est_pathogen_summary.pdf", 
+       plot = last_plot() + 
+         theme(title = element_text(size = 18),
+               axis.text = element_text(size = 13, color = "black"), 
+               axis.title = element_text(size = 15, color = "black"),
+               strip.text = element_text(size = 13, color = "black", face = "bold", hjust = 0.2),
+               panel.grid.major.y = element_line(color = "lightgray", size = 0.1),
+               legend.position = "top", 
+               legend.text = element_text(size = 13), 
+               plot.caption = element_text(size = 10)
+               ),
+        
+       width = 12, height = 6)
+```
+
+Interestingly, as observed before by Josephine, *A. euteiches* is causing disease only in peas. *A. cochlioides* and *A. cladogamus* are causing disease in both sugar beet and spinach with no differences in the level of severity between the two pathogens.
+
+\newpage
+
+## Effect of different soil properties
+
+```{r, message=FALSE, warning=FALSE, echo = F}
+
+# combining post_hoc and dta_aphano
+dta_posthoc_aphano_full <-
+  posthoc_full %>%
+  filter(!is.na(estimate)) %>%
+  left_join(dta_aphano) %>% 
+  filter(rep == 1) %>%
+  select(-rep, -disease) 
+
+dta_posthoc_aphano_filt <-
+  posthoc_full %>%
+  filter(!is.na(estimate)) %>%
+  left_join(dta_aphano) %>% 
+  filter(rep == 1) %>%
+  filter(soil_ca < 3000, soil_k <100, soil_mg<100, soil_p<100) %>%
+  select(-rep, -disease) 
+
+```
+
+### Distribution of different soil properties
+
+#### (full dataset)
+
+```{r message=FALSE, warning=FALSE, echo = F, out.width="120%"}
+dta_posthoc_aphano_full %>%
+  pivot_longer(cols = contains("soil"), names_to = "property", values_to = "value") %>%
+  ggplot(aes(x = value)) + 
+  geom_histogram(fill = "gray", color = "black") + 
+  facet_wrap(~property, scales = "free", ncol = 5)
+
+```
+
+As it is visible here in the plots, our data for various soil properties is not normally distributed, and therefore, I decided to log transform the data. However, there are some outliers still. There are some samples with extremely high Ca, K, Mg and P, which I considered as outliers here. Perhaps, Josephine can check if they are false readings or inputs.
+
+\newpage
+
+#### (filtered dataset)
+
+Once we remove the outliers, the distributions look better as below:
+
+```{r message=FALSE, warning=FALSE, echo = F, out.width="120%"}
+dta_posthoc_aphano_filt %>%
+  pivot_longer(cols = contains("soil"), names_to = "property", values_to = "value") %>%
+  ggplot(aes(x = value)) + 
+  geom_histogram(fill = "gray", color = "black") + 
+  facet_wrap(~property, scales = "free", ncol = 5)
+```
+
+I used log10 transformed values for Ca, K, Mg, and P levels and normal values for soil pH for further analysis.
+
+\newpage
+
+## Effect of different soil properties on diseases severity index
+
+```{r message=FALSE, warning=FALSE, echo = F}
+model_soil <- lm(estimate ~ region + crop + pathogen + 
+                   log_soil_ca +  log_soil_k + log_soil_mg + log_soil_p + soil_p_h,
+                 data = dta_posthoc_aphano_filt)
+
+
+#summary(model_soil) %>% tidy()
+model_soil$call
+anova(model_soil)
+
+```
+
+ANOVA results for different soil properties while controlling for crop effect and pathogen effect show no significant effect of any of the soil property. It could be that the potential effect we have from soil properties is nested in the region variable.
+
+\newpage
+
+## Correlation between DSI and soil properties (in pathogen presence and absence)
+
+To look at correlations with disease severity index,
+
+```{r message=FALSE, warning=FALSE, echo = F, include=FALSE, out.width="120%"}
+dta_posthoc_aphano_full %>%
+  select(-soil_ca, -soil_k, -soil_mg, -soil_p, -log_soil_p_h) %>%
+  pivot_longer(cols = contains("soil"), names_to = "property", values_to = "value") %>%
+  ggplot(aes(x = value, y = estimate)) + 
+  theme_replace(legend.position = "bottom") + 
+  geom_hline(yintercept = 0, color = "lightgray") + 
+  geom_errorbar(aes(ymin= lower.CL, ymax= upper.CL), width = 0)  +
+  geom_point(aes(color = pathogen, fill = pathogen), 
+              shape = 21, color = "black", size = 3)  + 
+  scale_y_continuous(breaks = seq(0,100, by =20)) + 
+  stat_cor(method = "pearson") + 
+  stat_smooth(method = "lm", formula = y ~ poly(x, degree = 1), alpha = 0.1) +
+  scale_fill_viridis( discrete = T, option = "turbo", direction = 1, begin = 0.1, end = 0.9) +
+  scale_color_viridis( discrete = T, option = "turbo", direction = 1, begin = 0.1, end = 0.9) +
+  facet_grid(crop~property, scales = "free_x")
+
+ggsave("correlations_full.pdf", 
+       plot = last_plot() + 
+         theme(title = element_text(size = 18),
+               axis.text = element_text(size = 13, color = "black"), 
+               axis.title = element_text(size = 15, color = "black"),
+               strip.text = element_text(size = 13, color = "black", face = "bold", hjust = 0.2),
+               panel.grid.major.y = element_line(color = "lightgray", size = 0.1),
+               legend.position = "top", 
+               legend.text = element_text(size = 13), 
+               plot.caption = element_text(size = 10)
+               ),
+        
+       width = 12, height = 12)
+```
+
+```{r, echo=FALSE, out.width="120%"}
+dta_posthoc_aphano_filt %>%
+  select(-soil_ca, -soil_k, -soil_mg, -soil_p, -log_soil_p_h) %>%
+  pivot_longer(cols = contains("soil"), names_to = "property", values_to = "value") %>%
+  ggplot(aes(x = value, y = estimate)) + 
+  theme_replace(legend.position = "bottom") + 
+  geom_hline(yintercept = 0, color = "lightgray") + 
+  geom_errorbar(aes(ymin= lower.CL, ymax= upper.CL), width = 0)  +
+  geom_point(aes(color = pathogen, fill = pathogen), 
+              shape = 21, color = "black", size = 3)  + 
+  scale_y_continuous(breaks = seq(0,100, by =20)) + 
+  stat_cor(method = "pearson") + 
+  stat_smooth(method = "lm", formula = y ~ poly(x, degree = 1), alpha = 0.1) +
+  scale_fill_viridis( discrete = T, option = "turbo", direction = 1, begin = 0.1, end = 0.9) +
+  scale_color_viridis( discrete = T, option = "turbo", direction = 1, begin = 0.1, end = 0.9) +
+  facet_grid(crop~property, scales = "free_x") + 
+  labs(x = "Unit of soil property \n(log10 transformed except for soil pH)",
+       y = "Disease Severity Index estimate (%)",
+       fill = "Pathogen", color = "Pathogen",
+       title = "Correlation between DSI and soil properties",
+       subtitle = "Dataset where an Aphanomyces sp. was present and no pathogen was present", 
+       caption = "Error bars around points represent the 95 % confidence interval for the model estimates of DSI")
+
+ggsave("correlations_filt_patho_4_levels.pdf", 
+       plot = last_plot() + 
+         theme(title = element_text(size = 18),
+               axis.text = element_text(size = 13, color = "black"), 
+               axis.title = element_text(size = 15, color = "black"),
+               strip.text = element_text(size = 13, color = "black", face = "bold", hjust = 0.2),
+               panel.grid.major.y = element_line(color = "lightgray", size = 0.1),
+               legend.position = "top", 
+               legend.text = element_text(size = 13), 
+               plot.caption = element_text(size = 10)
+               ),
+        
+       width = 20, height = 12)
+```
+
+\newpage
+
+## Correlation between DSI and soil properties (in pathogen presence only)
+
+As the question here is to see whether the changes in disease severity depends on the soil properties or not, therefore, I only used a subset of dataset where the pathogen presence was confirmed with microscope.
+
+The plot below shows the correlations:
+
+```{r message=FALSE, warning=FALSE, echo = F, out.width="120%"}
+dta_posthoc_aphano_filt %>%
+  filter(pathogen != "None") %>%
+  select(-soil_ca, -soil_k, -soil_mg, -soil_p, -log_soil_p_h) %>%
+  pivot_longer(cols = contains("soil"), names_to = "property", values_to = "value") %>%
+  ggplot(aes(x = value, y = estimate)) + 
+  theme_replace(legend.position = "bottom") + 
+  geom_hline(yintercept = 0, color = "lightgray") + 
+  geom_errorbar(aes(ymin= lower.CL, ymax= upper.CL), width = 0)  +
+  geom_text(aes(label = as.numeric(as.character(region)))) + 
+  geom_point(aes(color = pathogen, fill = pathogen), 
+              shape = 21, color = "black", size = 3)  + 
+  #scale_x_log10() + 
+  scale_y_continuous(breaks = seq(0,100, by =20)) + 
+  stat_cor(method = "pearson") + 
+  stat_smooth(method = "lm", formula = y ~ poly(x, degree = 1), alpha = 0.1) +
+  scale_fill_viridis( discrete = T, option = "turbo", direction = 1, begin = 0.1, end = 0.6) +
+  scale_color_viridis( discrete = T, option = "turbo", direction = 1, begin = 0.1, end = 0.6) +
+  facet_grid(crop~property, scales = "free") + 
+  labs(x = "Unit of soil property \n(log10 transformed except for soil pH)",
+       y = "Disease Severity Index estimate (%)",
+       fill = "Pathogen", color = "Pathogen",
+       title = "Correlation between DSI and soil properties",
+       subtitle = "Dataset where an Aphanomyces sp. was confirmed", 
+       caption = "Error bars around points represent the 95 % confidence interval for the model estimates of DSI")
+
+ggsave("correlations_filt_patho_3_levels.pdf", 
+       plot = last_plot() + 
+         theme(title = element_text(size = 18),
+               axis.text = element_text(size = 13, color = "black"), 
+               axis.title = element_text(size = 15, color = "black"),
+               strip.text = element_text(size = 13, color = "black", face = "bold", hjust = 0.2),
+               panel.grid.major.y = element_line(color = "lightgray", size = 0.1),
+               legend.position = "top", 
+               legend.text = element_text(size = 13), 
+               plot.caption = element_text(size = 10)
+               ),
+        
+       width = 20, height = 12)
+```
+
+From these data, we have no significant correlation between DSI and any of the soil property i. e. Disease Severity Index is not correlated with Ca, K, Mg, P and pH in the soil.
+
+\newpage
+
+# Conclusions
+
+1.  There are significant differences between regions for disease severity index caused by *Aphanomyces sp.*
+
+2.  Not all locations harbour all *Aphanomyces sp.*. Only Skåne had all three pathogens present in the soil.
+
+3.  All 3 *Aphanomyces sp.* cause disease with same severity, however, are host specific whereby *A. euteiches* causes disease only in peas and *A. cladogamus* & *A. cochlioides* cause disease in both spinach and sugar beet.
+
+4.  The soil properties seem to not have a significant effect on the disease severity although there are some trends in correlations. However, looking only at the gradient of soil properties when a pathogen presence is confirmed, we do not see any correlation with differences in disease severity levels.

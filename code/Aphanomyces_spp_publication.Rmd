@@ -1,0 +1,528 @@
+---
+title: "Aphanomyces spp. analysis for publication"
+author: "Sidhant Chaudhary"
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+    theme: united
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+    fig_caption: yes
+    number_sections: yes
+    df_print: tibble
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+                      warning=F,
+                      message = F,
+                      fig.align='center', out.width='100%', fig.asp=1)
+
+
+# R setup template
+rm(list = ls())
+
+# packages and libraries
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, tidytext, janitor, openxlsx, conflicted, skimr, Hmisc, knitr, 
+               lme4, lmerTest,
+               lsmeans, emmeans, multcomp, multcompView,
+               ggpubr, ggcorrplot, ggpubr, ggrepel, GGally, viridis) 
+
+# tidymodels_prefer()
+
+# conflicts: identical function names from different packages
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflict_prefer("lmer", "lmerTest")
+
+# ggplot theme
+theme_set(theme_test() + 
+          theme(
+            #axis.title = element_text(size = 14),
+            axis.text = element_text(color = "black"),
+            strip.background = element_rect(fill = "skyblue"),
+            strip.text = element_text(hjust = 0),
+            # legend.text = element_text(size = 12),
+            # legend.title = element_text(size = 14), 
+            legend.position = "bottom"
+          ))
+```
+
+# Aim, Hypothesis, and objectives
+
+-   to investigate the distribution of the three different Aphanomyces species: A. euteiches, A. cochlioides, and A. cladogamus in southern Sweden, and to some extent in Denmark and Lithuania.
+
+    -   (the hypothesis is that the presence of different Aphanomyces spp. follow the cultivation of the host plants regionally, but that A. cladogamus is found on a wider geographic scale due to its broad host range.)
+
+-   different species of Aphanomyces co-exist, due to their similar ecological niche.
+
+-   to test if pathogen presence is associated with soil chemical properties, especially Ca.
+
+    -   Moreover, to test whether high calcium levels correlate with low disease pressure.
+
+# Data
+
+```{r}
+dta <- read.xlsx("Biotest lista Sc.xlsx",sheet= "Aph. Index + soil analysis 1 MW") %>% as_tibble()
+dta <- 
+  dta %>%
+  clean_names()
+
+colnames(dta)
+
+pea <- 
+  dta %>%
+  select(id, region, contains("soil"), contains("pea")) %>%
+  pivot_longer(cols = contains("index"), names_to = "rep", values_to = "disease") %>%
+  mutate(crop = "Pea", 
+         rep = str_replace_all(rep, "[^0-9]", "")
+         ) %>%
+  mutate_if(is.character, as.factor) %>%
+  rename(pathogen = note_pea)
+
+sugar_beet <- 
+  dta %>%
+  select(id, region, contains("soil"), contains("sugar_beet")) %>%
+  pivot_longer(cols = contains("index"), names_to = "rep", values_to = "disease") %>%
+  mutate(crop = "Sugar beet", 
+         rep = str_replace_all(rep, "[^0-9]", "")
+         ) %>%
+  mutate_if(is.character, as.factor) %>%
+  rename(pathogen = note_sugar_beet)
+
+spinach <- 
+  dta %>%
+  select(id, region, contains("soil"), contains("spinach")) %>% 
+  pivot_longer(cols = contains("index"), names_to = "rep", values_to = "disease") %>%
+  mutate(crop = "Spinach", 
+         rep = str_replace_all(rep, "[^0-9]", "")
+         ) %>%
+  mutate_if(is.character, as.factor) %>%
+  rename(pathogen = note_spinach)
+
+dta_long <- 
+  bind_rows(pea, sugar_beet, spinach) %>%
+  mutate(pathogen = as.character(pathogen)) %>%
+  mutate(pathogen = str_replace(pathogen, "A\\.", "Aphanomyces")) %>%
+  mutate(pathogen = factor(pathogen),
+         pathogen = fct_recode(pathogen, "None" = "No pathogen found"),
+         pathogen = fct_relevel(pathogen, 
+                                "Aphanomyces cladogamus",
+                                "Aphanomyces cochlioides",
+                                "Aphanomyces euteiches",
+                                "Aphanomyces cladogamus + Rhizoctonia",
+                                "Aphanomyces cochlioides + Rhizoctonia",
+                                "Aphanomyces euteiches + Phytophthora",
+                                "Aphanomyces sp. + Pythium",
+                                "Pythium",
+                                "Pythium + Nematodes",
+                                "Rhizoctonia",
+                                "Rhizoctonia + Pythium",
+                                "Rhizoctonia + Pythium + Nematodes",
+                                "Nematodes",
+                                "None"
+                                )) %>%
+  relocate(id, region, crop, pathogen, rep, disease)
+
+
+```
+
+# Exploratory data analysis
+
+# sample distribution
+
+```{r}
+library("rnaturalearth")
+install.packages("rnaturalearth")
+install.packages("regions")
+install.packages("eurostat")
+install.packages("rnaturalearthdata")
+library(regions)
+library(eurostat)
+sweden <- ne_states(country = "sweden", returnclass = "sf")
+map_nuts_2 <- get_eurostat_geospatial(
+  resolution = "60", nuts_level = "4",
+  year = 2016
+)
+
+map_nuts_2 %>%
+  filter(CNTR_CODE %in% c("SE", "DK", "LT")) %>% view()
+#  as_tibble() %>%
+  ggplot() +
+  geom_sf()
+```
+
+
+```{r}
+dta_long %>%
+  group_by(region, id) %>%
+  count() %>%
+  group_by(region) %>%
+  count()
+```
+
+# map data
+```{r}
+# install.packages("maps")
+mapdata <- map_data("world")
+mapdata %>% 
+  as_tibble() %>%
+  filter(region %in% c("Sweden", "Denmark", "Lithuania")) %>% view()
+  ggplot(aes(x = long, y = lat, group = group, fill = subregion)) + 
+  geom_polygon(color = "black")
+```
+
+
+# pathogen distribution each region
+```{r}
+dta_long %>%
+  ggplot(aes(x = region, fill = pathogen)) + 
+  geom_bar(position = "fill", color = "black") + 
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1))
+```
+
+
+
+
+```{r}
+dta_long %>%
+  group_by(region, pathogen, crop, id) %>%
+  summarise(disease_rep = mean(disease, na.rm = T)) %>%
+  ggplot(aes(x = pathogen, y = disease_rep)) + 
+  geom_hline(yintercept = 0, lty = 2, color = "gray") + 
+  geom_jitter(shape = 21, color = "steelblue") +
+  geom_boxplot(color = "black", fill = "steelblue", alpha = 0.8, outlier.shape = NA) + 
+  geom_text(data=. %>% 
+              group_by(crop, pathogen) %>% 
+              summarise(n=n()), 
+            aes(x=pathogen, y=-3, label= paste0("(n = ", n, ")")), 
+            hjust = 1, color= "gray50") +
+  stat_summary(fun = "mean", geom = "point", shape = 18, size = 4) + 
+  scale_y_continuous(breaks = seq(0,120, by =20), limits = c(-25, 100)) + 
+  coord_flip() +
+  facet_wrap(~crop) + 
+  labs(x = "", y = "Disease (%)")
+
+```
+
+As the paper will only focus on Aphanomyces, I think we should drop the pathogen levels where we found disease development but didn't detect **Aphanomyces** spp. morphologically.
+
+This leaves us with cases where **Aphanomyces** spp. was detected but alongside other pathogens. I'd say that because we do not know how much pathogens other than **Aphnomyces** spp. contributed to the disease, those cases should be skipped for the further analysis as well. In total, they are 6 cases as below:
+
+```{r}
+dta_long %>%
+filter( pathogen %in% c("Aphanomyces cladogamus + Rhizoctonia",
+                                "Aphanomyces cochlioides + Rhizoctonia",
+                                "Aphanomyces euteiches + Phytophthora",
+                                "Aphanomyces sp. + Pythium")) %>%
+  group_by(region, crop, pathogen) %>%
+  summarise(disease_rep = mean(disease, na.rm = T))
+```
+
+The dataset with **Aphanomyces** spp. and no pathogen level is as follows:
+
+```{r}
+dta_aphano <- 
+  dta_long %>%
+  filter(pathogen %in% c("Aphanomyces cladogamus",
+                         "Aphanomyces cochlioides",
+                         "Aphanomyces euteiches",
+                         "None")) %>%
+  mutate(pathogen = fct_drop(pathogen),
+         log_soil_ca = log10(soil_ca), 
+         log_soil_p = log10(soil_p),
+         log_soil_k = log10(soil_k),
+         log_soil_mg = log10(soil_mg)) 
+
+glimpse(dta_aphano)
+
+dta_aphano %>%
+  group_by(region, pathogen, crop, id) %>%
+  summarise(disease_rep = mean(disease, na.rm = T)) %>%
+  ggplot(aes(x = pathogen, y = disease_rep)) + 
+  geom_hline(yintercept = 0, lty = 2, color = "gray") + 
+  geom_jitter(shape = 21, color = "steelblue") +
+  geom_boxplot(color = "black", fill = "steelblue", alpha = 0.8, outlier.shape = NA) + 
+  geom_text(data=. %>% 
+              group_by(crop, pathogen) %>% 
+              summarise(n=n()), 
+            aes(x=pathogen, y=-3, label= paste0("(n = ", n, ")")), 
+            hjust = 1, color= "gray50") +
+  stat_summary(fun = "mean", geom = "point", shape = 18, size = 4) + 
+  scale_y_continuous(breaks = seq(0,120, by =20), limits = c(-25, 100)) + 
+  coord_flip() +
+  facet_wrap(~crop) + 
+  labs(x = "", y = "Disease (%)")
+```
+
+#  ds
+```{r}
+dta_aphano %>%
+  ggplot(aes(x = region, fill = pathogen)) + 
+  geom_bar(position = "fill", color = "black") + 
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1))
+```
+
+
+All visualisations until this point are for exploring.
+
+# Data analysis
+
+```{r}
+
+model_full <- lm(disease ~ region*crop*pathogen, data= dta_aphano)
+
+model_full$call
+anova(model_full) 
+print("Coefficients: (110 not defined because of singularities) \n
+      therefore, 3 way interactions are not kept in the model")
+
+# Post hoc tests
+lsmeans <- emmeans(model_full, ~ region + crop + pathogen)
+lsmeans_df <- as_data_frame(lsmeans)
+lsmeans_tidy <- lsmeans %>% tidy()
+cld <- cld(lsmeans, Letters = letters)
+cld$.group <- gsub(" ", "", cld$.group)
+
+posthoc_full <- left_join(lsmeans_df, lsmeans_tidy, by = c("region", "crop", "pathogen", "df")) %>%
+  left_join(., cld, by = c("region", "crop", "pathogen", "df", "emmean", "upper.CL", "lower.CL", "SE"))
+posthoc_full
+
+```
+
+```{r}
+# Visualisations
+posthoc_full %>%
+  # mutate(combo = paste0(region, " - ", crop, " - ", pathogen),
+  #        combo = fct_reorder(combo, estimate))  %>%
+  filter(!is.na(estimate)) %>%
+  ggplot(aes(x = estimate, y = fct_reorder(region, estimate), fill = pathogen)) +
+  geom_vline(xintercept = 0, lty = 2, color = "gray") + 
+  #geom_errorbar(aes(xmin = estimate -std.error, xmax = estimate + std.error), width = 0)  +
+  geom_errorbar(aes(xmin = lower.CL, xmax = upper.CL), width = 0, position = position_dodge(width = 0.6))  +
+  scale_fill_viridis( discrete = T, option = "turbo", direction = 1, begin = 0.1, end = 0.9) +
+  geom_point(shape = 21, size = 4, position = position_dodge(width = 0.6)) + 
+  # geom_text(aes(x = upper.CL + 2, label = .group), position = position_dodge(width = 0.6), 
+  #           hjust = 0, vjust = 0.5 ) +
+  geom_text(aes(x = upper.CL + 2 , 
+                label = ifelse(p.value < 0.001, "***", 
+                               ifelse(p.value < 0.01, "**", 
+                                      ifelse(p.value < 0.05, "*", "")))
+                ),
+            vjust = 0.7, hjust = 0, position = position_dodge(width = 0.6)
+            ) +
+  scale_x_continuous(breaks = seq(0,120, by =20), limits = c(-25, 100)) + 
+  facet_grid(~crop, scales = "free_y", space = "free_y") + 
+  labs(title = "Disease severity index in 3 crops in 13 regions by different Aphanomyces sp.",
+       x = "Disease %", 
+       y = NULL,
+       fill = NULL, 
+       caption = "Points represent the model mean estimate, error bars represent 95 % confidence interval \nEstimates that are significantly different from 0 are represented by * at p < 0.05, ** at p < 0.01, and *** at p < 0.001")
+
+```
+
+## Distribution of different *Aphanomyces* spp. 
+
+## Co-existence of different *Aphanomyces* spp.
+
+## Pathogen presence association with soil chemical properties, especially Ca
+
+```{r}
+## foodhills data
+foodhills <- read.xlsx("Foodhills statistik 29 augusti 2023.xlsx") %>% as_tibble()
+
+foodhills <- foodhills %>%
+  mutate(pathogen = as.factor(pathogen),
+         log_ca = log10(Ca)) %>%
+  mutate(pathogen = fct_recode(pathogen, "None" = "No pathogen found")) %>%
+  mutate(aphano_binary = as.numeric(ifelse(str_detect(pathogen, "Aphano"), 1, 0)) )
+```
+
+
+```{r}
+dta_aphano %>% view()
+  filter(rep == 1) %>%
+  mutate(aphano_binary = ifelse(pathogen == "None", "None", "Aphanomyces spp.")) %>%
+  #count(aphano_binary)
+  pivot_longer(soil_p_h:log_soil_mg) %>%
+  ggplot(aes(x = value, y = pathogen)) +
+    geom_boxplot(outlier.shape = NA) + 
+    geom_jitter(aes(fill = region), shape = 21) +
+    facet_wrap(~name, scales = "free_x")
+  
+foodhills %>%
+  pivot_longer(c(Ca, log_ca)) %>%
+  ggplot(aes(x = value, fill = factor(aphano_binary), group = aphano_binary)) + 
+  # geom_boxplot(ou tlier.shape = NA) +
+  geom_histogram(position = "identity", color = "black", alpha = 0.7)  + 
+  facet_grid(aphano_binary~name, scales = "free")
+
+foodhills %>%
+  count(aphano_binary) %>%
+  mutate(prop = n/sum(n))
+
+shapiro.test(foodhills$log_ca[foodhills$log_ca < 1.8])
+hist(foodhills$log_ca, col = "lightblue", main = "Histogram")
+qqnorm(foodhills$Ca); qqline(foodhills$Ca, col = 2)
+ggqqplot(foodhills$log_ca[foodhills$log_ca < 1.8], shape = 21)
+```
+
+fitting a binomial model
+
+```{r}
+model <- glm(aphano_binary ~ log10(Ca), 
+             family = binomial(), 
+             data = foodhills)
+summary(model)
+exp(coef(model))
+
+```
+
+
+```{r}
+plot(model)
+coef <- coef(model)
+odds_ratios <- exp(coef(model))
+conf_intervals <- exp(confint(model))
+
+coef[1]
+
+rownames(conf_intervals)
+
+# results table
+result_table <- 
+  as.data.frame(
+    cbind(coef = rownames(coef), 
+          odds_ratios, 
+          conf_intervals) 
+  ) %>% 
+  clean_names()
+result_table
+result_table %>% 
+  gather(key = "Interval", value = "value", -coef) %>%
+  as_tibble() %>%
+  mutate(value = as.numeric(value), 
+         value_back_trans = 10^value)
+
+cat("For a one-unit increase in the log10_ca, the odds of the response being 1 decrease by approximately", round(1/0.20549670568165, 2), "times")
+
+cat("For a 10 fold increase in the ca, the odds of the response being 1 decrease by approximately", round(1/0.20549670568165, 2), "times")
+
+cat("For a one-unit increase in the log10_ca, the odds of the response being 1 decrease by approximately", round((1/0.20549670568165 - 1)*100, 2), "%")
+
+
+cat("For a 10 fold increase in the ca, the odds of the response being apanomyces decrease by approximately", round((1/0.20549670568165 - 1)*100, 2), "%")
+
+calculate_prob_change <- function(prob_base, odds_ratio) {
+  prob_change <- (odds_ratio * prob_base) / (1 + prob_base * (odds_ratio - 1))
+  return(prob_change)
+}
+prob_change <- 0.20549670568165/(1 + 0.20549670568165)
+prob_change
+```
+
+
+```{r}
+# setting limits for x axis
+x_limits <- challenger %>%
+  dplyr::summarise(min = 0, max = max(temp)+10)
+
+# creating artificial obs for curve smoothing -- several points between the limits
+x <- seq(x_limits[[1]], x_limits[[2]], by=0.5)
+
+# artificial points prediction
+# see: https://stackoverflow.com/questions/26694931/how-to-plot-logit-and-probit-in-ggplot2
+temp.data = data.frame(temp = x) #column name must be equal to the variable name
+
+# Predict the fitted values given the model and hypothetical data
+predicted.data <- as.data.frame(
+  predict(model_fit, 
+          newdata = temp.data, 
+          type="link", se=TRUE)
+  )
+
+# Combine the hypothetical data and predicted values
+new.data <- cbind(temp.data, predicted.data)
+##### --------------------------------------------------------------------------
+
+# Compute confidence intervals
+std <- qnorm(0.95 / 2 + 0.5)
+new.data$ymin <- model_fit$family$linkinv(new.data$fit - std * new.data$se)
+new.data$ymax <- model_fit$family$linkinv(new.data$fit + std * new.data$se)
+new.data$fit <- model_fit$family$linkinv(new.data$fit)  # Rescale to 0-1
+
+p <- ggplot(challenger, aes(x=temp, y=resp))+ 
+  geom_point(colour = plotly_palette[1])+ 
+  geom_ribbon(data=new.data, 
+              aes(y=fit, ymin=ymin, ymax=ymax), 
+              alpha = 0.5, 
+              fill = '#FFF0F5')+
+  geom_line(data=new.data, aes(y=fit)) + 
+  labs(x="Temperature", y="Estimated Fail Probability")+
+  ggtitle("Predicted Probabilities for fail/orings with 95% Confidence Interval")+
+  theme_bw()+
+  theme(panel.border = element_blank(), plot.title = element_text(hjust=0.5))
+
+p
+
+```
+
+
+
+```{r}
+# putting it in our dataframe
+foodhills_predicted <- 
+  foodhills %>%
+  mutate(log_odds_aphano_binary = coef[1] + coef[2]*log10(Ca),
+         odds_aphano_binary = exp(log_odds_aphano_binary),
+         odds_aphano_binary_inv = 1/odds_aphano_binary,
+        prob = odds_aphano_binary/(1+odds_aphano_binary)) 
+
+foodhills_predicted %>%
+  ggplot(aes(x = Ca, y = prob)) +
+  geom_line() + 
+  #scale_x_log10() + 
+  scale_y_continuous(limits = c(0,1))
+
+
+```
+
+When the odds value is smaller than 1, interpretation is a little bit more complicated. When this is the case, we have to take the inverse value (i.e. 1 divided by the odds) to facilitate interpretation.
+
+The interpretation is then how LESS likely it is to observe the event of interest. For water content, the odds is 0.984. The inverse is:
+1/0.984 = 1.0159.
+
+This means that a one-unit increase in water content decreases the likelihood of observing Galumna sp. by 1.0159. We can also subtract 1 from the odds value to obtain a percentage:
+( 1.0159 − 1 ) ∗ 100 = 1.59  %.
+
+
+```{r}
+foodhills$.pred <- model$fitted.values
+foodhills %>% 
+  ggplot(aes(y = .pred, x = Ca, color = factor(aphano_binary))) + 
+  geom_jitter(shape = 21, width = 100) 
+
+
+foodhills %>%
+  ggplot(aes(x = Ca, y= aphano_binary)) + 
+  scale_x_log10() +
+  geom_jitter(aes(fill = factor(aphano_binary)), alpha = 0.8,
+              size = 2,
+              color = "black", shape = 21, height = .05) + 
+  stat_smooth(method = "glm", method.args = list(family=binomial), se = TRUE) 
+
+```
+
+## Are high calcium levels correlate with low disease pressure?
+
+# Conclusions
+
+# Session information
+
+```{r}
+sessionInfo()
+```
